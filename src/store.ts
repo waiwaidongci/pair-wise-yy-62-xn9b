@@ -1,5 +1,17 @@
-import { configureStore, createSlice, type PayloadAction } from '@reduxjs/toolkit';
+import { configureStore, createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { stowageApi, type Cargo, type CargoType } from './api';
+import {
+  ballastStabilityMargin,
+  initialBatches,
+  initialTanks,
+  mergeTransfers,
+  recalcTanks,
+  shoreTransfers,
+  type BallastTank,
+  type BallastTransfer,
+  type LocalBatch,
+  type MergeResult
+} from './ballast';
 
 export type StowageComment = {
   id: string;
@@ -62,6 +74,12 @@ const slice = createSlice({
       const cargo = state.cargo.find((item) => item.id === action.payload.id);
       if (cargo) cargo.lashing = action.payload.lashing;
     },
+    updateCargoPort(state, action: PayloadAction<{ id: string; port: string }>) {
+      const cargo = state.cargo.find((item) => item.id === action.payload.id);
+      if (cargo) cargo.port = action.payload.port;
+      state.planRevision += 1;
+      state.draftSavedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    },
     addComment(state, action: PayloadAction<{ cargoId: string; author: string; role: StowageComment['role']; content: string }>) {
       state.comments.unshift({ ...action.payload, id: `CM-${Date.now()}`, status: '待确认' });
     },
@@ -81,18 +99,141 @@ const slice = createSlice({
   }
 });
 
-export const { selectCargo, moveCargo, updateLashing, addComment, acceptComment, rejectComment, acceptLimit, setViewMode, lockPlan } = slice.actions;
+export const { selectCargo, moveCargo, updateLashing, updateCargoPort, addComment, acceptComment, rejectComment, acceptLimit, setViewMode, lockPlan } = slice.actions;
+
+// 压载水船岸合并 thunk：合并本地批次与岸端记录，失败时保留批次可重试
+export const mergeBatches = createAsyncThunk<MergeResult, void, { state: RootState }>(
+  'ballast/mergeBatches',
+  async (_, { getState }) => {
+    const state = getState();
+    const local = state.ballast.batches
+      .filter((b) => b.status !== '已合并')
+      .flatMap((b) => b.transfers);
+    const cargoBayMap: Record<string, number> = {};
+    state.stowage.cargo.forEach((c) => { cargoBayMap[c.id] = c.bay; });
+    const tankCargoMap: Record<string, string | undefined> = {};
+    state.ballast.tanks.forEach((t) => { tankCargoMap[t.id] = t.linkedCargoId; });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (Math.random() < 0.3) throw new Error('MERGE_FAILED'); // 模拟合并失败
+    return mergeTransfers(local, shoreTransfers, cargoBayMap, tankCargoMap);
+  }
+);
+
+type BallastState = {
+  tanks: BallastTank[];
+  transfers: BallastTransfer[];
+  appliedIds: string[];
+  batches: LocalBatch[];
+  online: boolean;
+  mergeStatus: 'idle' | 'merging' | 'failed' | 'success';
+  mergeError: string | null;
+  locked: boolean;
+  lastConflict: { tankId: string; currentVersion: number; submittedVersion: number } | null;
+  lastMergeResult: MergeResult | null;
+};
+
+const ballastSlice = createSlice({
+  name: 'ballast',
+  initialState: {
+    tanks: initialTanks,
+    transfers: [],
+    appliedIds: [],
+    batches: initialBatches,
+    online: true,
+    mergeStatus: 'idle',
+    mergeError: null,
+    locked: false,
+    lastConflict: null,
+    lastMergeResult: null
+  } as BallastState,
+  reducers: {
+    toggleOnline(state) { state.online = !state.online; },
+    addLocalTransfer(state, action: PayloadAction<{ tankId: string; volume: number; operator: string; cargoBay?: number }>) {
+      if (state.locked) return;
+      const batchId = `BATCH-${Date.now()}`;
+      const transfer: BallastTransfer = {
+        id: `BT-LOCAL-${Date.now()}`,
+        tankId: action.payload.tankId,
+        volume: action.payload.volume,
+        time: new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'),
+        operator: action.payload.operator,
+        source: '船端',
+        status: '正常',
+        batchId,
+        cargoBay: action.payload.cargoBay
+      };
+      state.batches.push({ id: batchId, createdAt: transfer.time, transfers: [transfer], status: '待合并', retries: 0 });
+    },
+    adjustTank(state, action: PayloadAction<{ tankId: string; volume: number; operator: string; version: number }>) {
+      const tank = state.tanks.find((t) => t.id === action.payload.tankId);
+      if (!tank || state.locked) return;
+      if (tank.version !== action.payload.version) {
+        // 后到者看到当前版本
+        state.lastConflict = { tankId: tank.id, currentVersion: tank.version, submittedVersion: action.payload.version };
+        return;
+      }
+      const next = Math.max(0, Math.min(tank.capacity, tank.current + action.payload.volume));
+      tank.current = next;
+      tank.version += 1;
+      state.lastConflict = null;
+    },
+    lockBallast(state) { state.locked = true; },
+    clearMergeBanner(state) { state.mergeStatus = 'idle'; state.mergeError = null; }
+  },
+  extraReducers: (builder) => {
+    builder
+      .addCase(mergeBatches.pending, (state) => { state.mergeStatus = 'merging'; state.mergeError = null; })
+      .addCase(mergeBatches.fulfilled, (state, action) => {
+        state.mergeStatus = 'success';
+        state.lastMergeResult = action.payload;
+        // 合并后的值重算各舱水量与剩余容量
+        action.payload.merged.forEach((t) => {
+          if (state.transfers.some((existing) => existing.id === t.id)) return;
+          state.transfers.push(t);
+          if (t.status === '正常' && !state.appliedIds.includes(t.id)) {
+            const tank = state.tanks.find((item) => item.id === t.tankId);
+            if (tank) {
+              tank.current = Math.max(0, Math.min(tank.capacity, tank.current + t.volume));
+              tank.version += 1;
+            }
+            state.appliedIds.push(t.id);
+          }
+        });
+        state.batches.forEach((b) => { if (b.status !== '已合并') b.status = '已合并'; });
+      })
+      .addCase(mergeBatches.rejected, (state) => {
+        // 合并失败后保留本地批次并重试
+        state.mergeStatus = 'failed';
+        state.mergeError = '合并失败，已保留本地批次，可重试';
+        state.batches.forEach((b) => { if (b.status !== '已合并') { b.status = '合并失败'; b.retries += 1; } });
+      })
+      .addCase(moveCargo, (state, action) => {
+        // 货位变化 → 关联水舱配平结论失效
+        state.tanks.forEach((tank) => { if (tank.linkedCargoId === action.payload.id) tank.trimConclusion = '失效'; });
+      })
+      .addCase(updateCargoPort, (state, action) => {
+        // 卸货港变化 → 关联水舱配平结论失效
+        state.tanks.forEach((tank) => { if (tank.linkedCargoId === action.payload.id) tank.trimConclusion = '失效'; });
+      });
+  }
+});
+
+export const { toggleOnline, addLocalTransfer, adjustTank, lockBallast, clearMergeBanner } = ballastSlice.actions;
 
 export const store = configureStore({
-  reducer: { stowage: slice.reducer, [stowageApi.reducerPath]: stowageApi.reducer },
+  reducer: { stowage: slice.reducer, ballast: ballastSlice.reducer, [stowageApi.reducerPath]: stowageApi.reducer },
   middleware: (getDefault) => getDefault().concat(stowageApi.middleware)
 });
 
 store.subscribe(() => {
-  if (typeof localStorage !== 'undefined') localStorage.setItem('yy62-stowage-plan', JSON.stringify(store.getState().stowage));
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('yy62-stowage-plan', JSON.stringify(store.getState().stowage));
+    localStorage.setItem('yy62-ballast', JSON.stringify(store.getState().ballast));
+  }
 });
 
 export type RootState = ReturnType<typeof store.getState>;
+export type AppDispatch = typeof store.dispatch;
 
 export function calculateStability(cargo: Cargo[]) {
   const total = cargo.reduce((sum, item) => sum + item.weight, 0);

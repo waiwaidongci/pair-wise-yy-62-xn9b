@@ -110,6 +110,16 @@ body { margin: 0; min-width: 320px; background: #eef2f0; }
 .print-deck small { color: var(--muted); font-size: 8px; margin-top: 5px; }
 .print-deck b { position: absolute; right: 5px; bottom: 5px; background: #c26b2a; color: white; border-radius: 3px; font-size: 8px; padding: 2px 4px; }
 .print-signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 35px; padding-top: 17px; border-top: 1px solid var(--line); font-size: 11px; }
+.ballast-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
+.tank-list { padding: 7px; }
+.tank-row { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; margin-bottom: 8px; background: #fafcfb; }
+.tank-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.tank-head strong { font-size: 12px; }
+.tank-bar { height: 8px; background: #e6eeeb; border-radius: 4px; overflow: hidden; }
+.tank-bar i { display: block; height: 100%; background: linear-gradient(90deg, #3b9987, #236f62); border-radius: 4px; }
+.tank-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; font-size: 9px; color: var(--muted); }
+.batch-list { padding: 7px; }
+.batch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 5px; margin-bottom: 7px; background: #fafcfb; }
 
 @media (max-width: 1200px) {
   .stowage-grid { grid-template-columns: 260px minmax(460px, 1fr); }

@@ -35,6 +35,7 @@ import {
   IconBoxMultiple,
   IconCheck,
   IconCube,
+  IconDroplet,
   IconFileDescription,
   IconHistory,
   IconLayoutBoardSplit,
@@ -46,29 +47,40 @@ import {
   IconRulerMeasure,
   IconRoute,
   IconShip,
-  IconUsers
+  IconUsers,
+  IconWifi
 } from '@tabler/icons-react';
 import * as THREE from 'three';
 import { useGetVoyageQuery, type Cargo, type CargoType } from './api';
+import { ballastStabilityMargin, remainingCapacity } from './ballast';
 import {
   acceptComment,
   acceptLimit,
   addComment,
+  addLocalTransfer,
+  adjustTank,
   calculateStability,
+  clearMergeBanner,
   detectConflicts,
+  lockBallast,
   lockPlan,
+  mergeBatches,
   moveCargo,
   rejectComment,
   selectCargo,
   setViewMode,
   store,
+  toggleOnline,
+  updateCargoPort,
   updateLashing,
+  type AppDispatch,
   type RootState
 } from './store';
 
 const nav = [
   { path: '/', label: '航次总览', icon: <IconShip size={17} /> },
   { path: '/stowage', label: '配载与货位', icon: <IconLayoutBoardSplit size={17} /> },
+  { path: '/ballast', label: '压载水', icon: <IconDroplet size={17} /> },
   { path: '/compare', label: '方案对比', icon: <IconHistory size={17} /> },
   { path: '/print', label: '配载图与清单', icon: <IconPrinter size={17} /> }
 ];
@@ -263,7 +275,7 @@ function Stowage() {
       <Card padding={0} className="cargo-list-panel"><div className="panel-title"><div><strong>货物清单</strong><Text size="xs" c="dimmed">{state.cargo.length} 票 · 可拖拽</Text></div><TextInput size="xs" placeholder="搜索提单号" /></div><ScrollArea h={600}><div className="cargo-list">{state.cargo.map((item) => <button draggable onDragStart={() => setDragId(item.id)} key={item.id} className={state.activeCargoId === item.id ? 'active' : ''} onClick={() => dispatch(selectCargo(item.id))}><i style={{ background: item.color }} /><div><strong>{item.bill}</strong><span>{item.type} · {item.weight}t · {item.port}</span></div><Badge size="xs" color={item.hazmat === '无' ? 'gray' : 'orange'}>{item.hazmat === '无' ? `B${item.bay}` : 'DG'}</Badge></button>)}</div></ScrollArea></Card>
       <Card padding={0} className="deck-panel"><div className="panel-title"><div><strong>主甲板货位图</strong><Text size="xs" c="dimmed">将货物拖入槽位，或点击槽位选择</Text></div><Group gap="xs"><Badge color="teal">稳性 {stability.stability.toFixed(1)}%</Badge><Badge color="gray">{stability.trim}</Badge></Group></div><div className="deck-layout"><div className="bridge-shape">驾驶台</div><div className="slot-grid">{slots.map((slot) => { const occupied = state.cargo.find((item) => item.deck === '主甲板' && item.bay === slot.bay && item.row === slot.row); return <button key={slot.id} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (dragId) dispatch(moveCargo({ id: dragId, bay: slot.bay, row: slot.row, tier: occupied?.tier ?? 1 })); setDragId(null); }} className={occupied ? 'occupied' : ''} style={occupied ? { background: occupied.color } : undefined} onClick={() => { if (occupied) { dispatch(selectCargo(occupied.id)); setRow(slot.row); setBay(slot.bay); } }}><small>{slot.label}</small>{occupied && <strong>{occupied.bill.slice(-3)}<span>{occupied.weight}t</span></strong>}</button>; })}</div><div className="deck-axis">左舷 ← 横向 Row → 右舷</div></div></Card>
       <Stack gap="sm">
-        <Card padding="md"><div className="panel-title"><div><strong>精确调整</strong><Text size="xs" c="dimmed">{active.id}</Text></div><IconCube size={18} /></div><Stack gap="sm" mt="md"><NumberInput label="Bay 纵向货位" min={1} max={20} value={bay} onChange={(value) => setBay(Number(value))} /><NumberInput label="Row 横向货位" min={0} max={8} value={row} onChange={(value) => setRow(Number(value))} /><NumberInput label="Tier 堆码层" min={0} max={4} value={tier} onChange={(value) => setTier(Number(value))} /><Button color="teal" onClick={() => dispatch(moveCargo({ id: active.id, bay, row, tier }))}>应用货位调整</Button><Divider /><Select label="绑扎状态" data={['已绑扎', '待绑扎', '需复核']} value={active.lashing} onChange={(value) => value && dispatch(updateLashing({ id: active.id, lashing: value as Cargo['lashing'] }))} /></Stack></Card>
+        <Card padding="md"><div className="panel-title"><div><strong>精确调整</strong><Text size="xs" c="dimmed">{active.id}</Text></div><IconCube size={18} /></div><Stack gap="sm" mt="md"><NumberInput label="Bay 纵向货位" min={1} max={20} value={bay} onChange={(value) => setBay(Number(value))} /><NumberInput label="Row 横向货位" min={0} max={8} value={row} onChange={(value) => setRow(Number(value))} /><NumberInput label="Tier 堆码层" min={0} max={4} value={tier} onChange={(value) => setTier(Number(value))} /><Button color="teal" onClick={() => dispatch(moveCargo({ id: active.id, bay, row, tier }))}>应用货位调整</Button><Divider /><Select label="绑扎状态" data={['已绑扎', '待绑扎', '需复核']} value={active.lashing} onChange={(value) => value && dispatch(updateLashing({ id: active.id, lashing: value as Cargo['lashing'] }))} /><Select label="卸货港变化（关联水舱配平结论失效）" data={['上海', '釜山', '温哥华']} value={active.port} onChange={(value) => value && dispatch(updateCargoPort({ id: active.id, port: value }))} /></Stack></Card>
         <Card padding="md" className={conflicts.length ? 'conflict-card' : ''}><div className="panel-title"><div><strong>实时冲突</strong><Text size="xs" c="dimmed">重心、稳性、隔离与堆码</Text></div><IconAlertTriangle size={18} /></div>{conflicts.map((item) => <button className="conflict-row" key={item.id} onClick={() => dispatch(selectCargo(item.cargoId))}><Badge size="xs" color={item.level === 'high' ? 'red' : 'orange'}>{item.level === 'high' ? '阻断' : '预警'}</Badge><div><strong>{item.title}</strong><span>{item.detail}</span></div></button>)}{!conflicts.length && <Text size="sm" c="teal" mt="md">当前方案未发现冲突。</Text>}</Card>
       </Stack>
     </div>
@@ -309,6 +321,86 @@ function PrintPlan() {
   </div>;
 }
 
+function Ballast() {
+  const ballast = useSelector((root: RootState) => root.ballast);
+  const cargo = useSelector((root: RootState) => root.stowage.cargo);
+  const dispatch = useDispatch<AppDispatch>();
+  const stability = ballastStabilityMargin(ballast.tanks);
+  const [adjustTankId, setAdjustTankId] = useState(ballast.tanks[0]?.id ?? '');
+  const [adjustVolume, setAdjustVolume] = useState(5);
+  const [operator, setOperator] = useState('张值班');
+  const [adjustVersion, setAdjustVersion] = useState(ballast.tanks[0]?.version ?? 1);
+  const [printOpen, setPrintOpen] = useState(false);
+
+  const suspendedCount = ballast.transfers.filter((t) => t.status === '挂起').length;
+  const pendingBatches = ballast.batches.filter((b) => b.status !== '已合并').length;
+  const selectedTank = ballast.tanks.find((t) => t.id === adjustTankId);
+
+  useEffect(() => {
+    if (selectedTank) setAdjustVersion(selectedTank.version);
+  }, [selectedTank?.id, selectedTank?.version]);
+
+  const handleAdjust = () => {
+    if (!selectedTank) return;
+    dispatch(adjustTank({ tankId: selectedTank.id, volume: adjustVolume, operator, version: adjustVersion }));
+  };
+  const handleRecordOffline = () => {
+    if (!selectedTank) return;
+    const cargoBay = selectedTank.linkedCargoId ? cargo.find((c) => c.id === selectedTank.linkedCargoId)?.bay : undefined;
+    dispatch(addLocalTransfer({ tankId: selectedTank.id, volume: adjustVolume, operator, cargoBay }));
+  };
+
+  return <div className="page">
+    <PageHeading eyebrow="BALLAST / 船岸合并" title="压载水调拨与记录合并" description="离港前断网记录，回网后合并船岸；同一调拨只入账一次，冲突挂起并按合并值重算。" actions={<><Badge size="lg" color={ballast.online ? 'teal' : 'gray'} leftSection={<IconWifi size={14} />}>{ballast.online ? '在线' : '断网'}</Badge><Button variant="default" onClick={() => dispatch(toggleOnline())}>{ballast.online ? '模拟断网' : '恢复联网'}</Button><Button color="teal" leftSection={<IconRefresh size={16} />} loading={ballast.mergeStatus === 'merging'} onClick={() => dispatch(mergeBatches())}>合并船岸记录</Button></>} />
+    {ballast.mergeStatus === 'failed' && <div className="warning-banner"><IconAlertTriangle size={18} /><strong>合并失败</strong><span>{ballast.mergeError}，共 {pendingBatches} 个本地批次待重试。</span><Button size="compact-xs" color="teal" onClick={() => dispatch(mergeBatches())}>重试合并</Button></div>}
+    {ballast.lastConflict && <div className="warning-banner"><IconAlertTriangle size={18} /><strong>版本冲突</strong><span>水舱 {ballast.lastConflict.tankId} 已被他人更新，当前版本 V{ballast.lastConflict.currentVersion}（你提交的是 V{ballast.lastConflict.submittedVersion}）。后到者请基于当前版本重新提交。</span></div>}
+    {suspendedCount > 0 && <div className="warning-banner"><IconAlertTriangle size={18} /><strong>{suspendedCount} 项调拨挂起</strong><span>水量或货位冲突，双方记录已保留，待人工裁决后入账。</span></div>}
+    <SimpleGrid cols={{ base: 2, lg: 4 }} spacing="sm" mb="md">{[
+      ['压载水总量', `${ballast.tanks.reduce((s, t) => s + t.current, 0).toFixed(1)} m³`, '合并后重算', 'ok'],
+      ['稳性裕度', `${stability.toFixed(1)}%`, stability > 70 ? '符合航次要求' : '低于控制线', stability > 70 ? 'ok' : 'bad'],
+      ['挂起调拨', `${suspendedCount}`, '保留双方待裁决', 'warn'],
+      ['本地批次', `${pendingBatches}`, pendingBatches ? '待合并 / 失败待重试' : '已全部合并', pendingBatches ? 'warn' : 'ok']
+    ].map((item) => <Card key={item[0]} padding="md" className="metric-card"><Text size="xs" c="dimmed">{item[0]}</Text><Text fw={800} fz={23} mt={3}>{item[1]}</Text><Text size="xs" c={item[3] === 'bad' ? 'red' : item[3] === 'warn' ? 'orange' : 'teal'}>{item[2]}</Text></Card>)}</SimpleGrid>
+    <div className="ballast-grid">
+      <Stack gap="sm">
+        <Card padding={0}>
+          <div className="panel-title"><div><strong>压载水舱</strong><Text size="xs" c="dimmed">剩余容量与配平结论按合并后的值重算</Text></div><Badge color="teal" variant="light">稳性 {stability.toFixed(1)}%</Badge></div>
+          <div className="tank-list">{ballast.tanks.map((tank) => {
+            const remaining = remainingCapacity(tank);
+            const pct = (tank.current / tank.capacity) * 100;
+            const linkedCargo = cargo.find((c) => c.id === tank.linkedCargoId);
+            return <div key={tank.id} className="tank-row"><div className="tank-head"><strong>{tank.name}</strong><Badge size="xs" color={tank.side === '左舷' ? 'blue' : tank.side === '右舷' ? 'cyan' : 'gray'}>{tank.side}</Badge><Badge size="xs" color={tank.trimConclusion === '配平' ? 'teal' : tank.trimConclusion === '失效' ? 'red' : 'orange'}>{tank.trimConclusion}</Badge><Text size="xs" c="dimmed" ml="auto">V{tank.version}</Text></div><div className="tank-bar"><i style={{ width: `${pct}%` }} /></div><div className="tank-meta"><span>{tank.current.toFixed(1)} / {tank.capacity} m³</span><span>剩余 {remaining.toFixed(1)} m³</span>{linkedCargo && <span>关联货票 {linkedCargo.bill} · {linkedCargo.port} · B{linkedCargo.bay}</span>}</div></div>;
+          })}</div>
+        </Card>
+        <Card padding={0}>
+          <div className="panel-title"><div><strong>调拨记录</strong><Text size="xs" c="dimmed">船岸合并后 · 同一调拨只入账一次</Text></div><Badge>{ballast.transfers.length} 笔</Badge></div>
+          <ScrollArea h={280}><Table striped verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>调拨号</Table.Th><Table.Th>水舱</Table.Th><Table.Th>水量</Table.Th><Table.Th>来源</Table.Th><Table.Th>状态</Table.Th><Table.Th>操作员</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{ballast.transfers.length === 0 && <Table.Tr><Table.Td colSpan={6}><Text size="xs" c="dimmed" ta="center">尚未合并，点击"合并船岸记录"</Text></Table.Td></Table.Tr>}{ballast.transfers.map((t) => <Table.Tr key={t.id}><Table.Td><Text size="xs" fw={700}>{t.id}</Text>{t.conflictWith && <Text size="xs" c="red">冲突 ↔ {t.conflictWith}</Text>}</Table.Td><Table.Td><Text size="xs">{ballast.tanks.find((tk) => tk.id === t.tankId)?.name ?? t.tankId}</Text></Table.Td><Table.Td><Text size="xs" c={t.volume >= 0 ? 'teal' : 'blue'}>{t.volume >= 0 ? '+' : ''}{t.volume} m³</Text></Table.Td><Table.Td><Badge size="xs" color={t.source === '岸端' ? 'violet' : 'gray'}>{t.source}</Badge></Table.Td><Table.Td><Badge size="xs" color={t.status === '挂起' ? 'orange' : 'teal'}>{t.status}</Badge></Table.Td><Table.Td><Text size="xs">{t.operator}</Text></Table.Td></Table.Tr>)}</Table.Tbody></Table></ScrollArea>
+        </Card>
+      </Stack>
+      <Stack gap="sm">
+        <Card padding="md">
+          <div className="panel-title"><div><strong>水舱调整</strong><Text size="xs" c="dimmed">提交时携带当前版本，后到者见当前版本</Text></div><IconDroplet size={18} /></div>
+          <Stack gap="sm" mt="md"><Select label="水舱" data={ballast.tanks.map((t) => ({ value: t.id, label: `${t.name} (V${t.version})` }))} value={adjustTankId} onChange={(v) => setAdjustTankId(v ?? '')} /><NumberInput label="调拨水量 (m³, 正注入 负排出)" value={adjustVolume} onChange={(v) => setAdjustVolume(Number(v))} /><TextInput label="值班员" value={operator} onChange={(event) => setOperator(event.currentTarget.value)} /><Text size="xs" c="dimmed">当前版本 V{selectedTank?.version ?? 0}，提交后版本 +1</Text><Group><Button color="teal" disabled={ballast.locked} onClick={handleAdjust}>提交调整</Button><Button variant="default" disabled={ballast.locked || ballast.online} onClick={handleRecordOffline}>断网记录</Button></Group>{ballast.locked && <Badge color="teal">已锁定</Badge>}</Stack>
+        </Card>
+        <Card padding={0}>
+          <div className="panel-title"><div><strong>本地批次</strong><Text size="xs" c="dimmed">断网时记录，合并失败保留并重试</Text></div></div>
+          <div className="batch-list">{ballast.batches.map((b) => <div key={b.id} className="batch-row"><div><Text size="xs" fw={700}>{b.id}</Text><Text size="xs" c="dimmed">{b.createdAt} · {b.transfers.length} 笔 · 重试 {b.retries} 次</Text></div><Group gap="xs"><Badge size="xs" color={b.status === '已合并' ? 'teal' : b.status === '合并失败' ? 'red' : 'orange'}>{b.status}</Badge>{b.status !== '已合并' && <Button size="compact-xs" variant="default" onClick={() => dispatch(mergeBatches())}>重试</Button>}</Group></div>)}</div>
+        </Card>
+        <Card padding="md">
+          <div className="panel-title"><div><strong>确认与打印</strong><Text size="xs" c="dimmed">确认前锁定，打印标出待核</Text></div><IconPrinter size={18} /></div>
+          <Stack gap="sm" mt="md"><Button color="teal" leftSection={<IconLock size={16} />} disabled={ballast.locked} onClick={() => dispatch(lockBallast())}>确认并锁定</Button><Button variant="default" leftSection={<IconPrinter size={16} />} onClick={() => setPrintOpen(true)}>打印待核记录</Button></Stack>
+        </Card>
+      </Stack>
+    </div>
+    <Modal opened={printOpen} onClose={() => setPrintOpen(false)} title="压载水记录打印预览" centered size="lg"><div className="print-sheet">
+      <div className="print-header"><div><Text size="xs" c="dimmed">BALLAST WATER RECORD</Text><h1>压载水调拨记录</h1><p>海岳轮 · V-2609-17</p></div><div className="print-stamp" style={suspendedCount > 0 ? { borderColor: '#c26b2a', color: '#c26b2a' } : undefined}>{suspendedCount > 0 ? '待核' : '已校核'}</div></div>
+      <div className="print-kpis"><div><span>压载水总量</span><strong>{ballast.tanks.reduce((s, t) => s + t.current, 0).toFixed(1)} m³</strong></div><div><span>稳性裕度</span><strong>{stability.toFixed(1)}%</strong></div><div><span>挂起调拨</span><strong>{suspendedCount}</strong></div><div><span>记录笔数</span><strong>{ballast.transfers.length}</strong></div></div>
+      <Table striped verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>调拨号</Table.Th><Table.Th>水舱</Table.Th><Table.Th>水量</Table.Th><Table.Th>来源</Table.Th><Table.Th>状态</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{ballast.transfers.map((t) => <Table.Tr key={t.id}><Table.Td>{t.id}</Table.Td><Table.Td>{ballast.tanks.find((tk) => tk.id === t.tankId)?.name}</Table.Td><Table.Td>{t.volume} m³</Table.Td><Table.Td>{t.source}</Table.Td><Table.Td>{t.status}{t.status === '挂起' ? ' (待核)' : ''}</Table.Td></Table.Tr>)}</Table.Tbody></Table>
+      <div className="print-signatures"><div>值班员：____</div><div>船长：____</div></div>
+    </div></Modal>
+  </div>;
+}
+
 function Shell({ children }: { children: ReactNode }) {
   const state = useSelector((root: RootState) => root.stowage);
   const stability = calculateStability(state.cargo);
@@ -320,5 +412,5 @@ function Shell({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
-  return <BrowserRouter><Shell><Routes><Route path="/" element={<Overview />} /><Route path="/stowage" element={<Stowage />} /><Route path="/compare" element={<Compare />} /><Route path="/print" element={<PrintPlan />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></BrowserRouter>;
+  return <BrowserRouter><Shell><Routes><Route path="/" element={<Overview />} /><Route path="/stowage" element={<Stowage />} /><Route path="/ballast" element={<Ballast />} /><Route path="/compare" element={<Compare />} /><Route path="/print" element={<PrintPlan />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></BrowserRouter>;
 }
