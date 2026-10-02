@@ -111,12 +111,26 @@ body { margin: 0; min-width: 320px; background: #eef2f0; }
 .print-deck b { position: absolute; right: 5px; bottom: 5px; background: #c26b2a; color: white; border-radius: 3px; font-size: 8px; padding: 2px 4px; }
 .print-signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 35px; padding-top: 17px; border-top: 1px solid var(--line); font-size: 11px; }
 
+/* 压载水调拨与船岸合并 */
+.ballast-grid { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 14px; align-items: start; }
+.error-banner { display: flex; align-items: center; gap: 9px; color: #9c3532; background: #fdf0ef; border: 1px solid #efc5c2; border-radius: 6px; padding: 11px 13px; margin-bottom: 14px; font-size: 12px; }
+.error-banner span { color: #8a6a68; }
+.notice-banner { display: flex; align-items: center; gap: 9px; color: #1c5f54; background: #ecf7f3; border: 1px solid #bfe0d6; border-radius: 6px; padding: 11px 13px; margin-bottom: 14px; font-size: 12px; }
+.notice-banner span { color: #4f7469; flex: 1; }
+.sync-conflict { border: 1px solid #eccd9d; background: #fffbf4; border-radius: 6px; padding: 12px; }
+.conflict-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+.conflict-side { border: 1px solid var(--line); border-radius: 5px; padding: 9px; background: white; }
+.conflict-side small, .conflict-side strong { display: block; }
+.conflict-side small { color: var(--muted); font-size: 9px; }
+.conflict-side strong { margin-top: 4px; font-size: 12px; }
+.print-stamp.pending { border-color: var(--amber); color: var(--amber); }
+
 @media (max-width: 1200px) {
   .stowage-grid { grid-template-columns: 260px minmax(460px, 1fr); }
   .stowage-grid > :last-child { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 }
 @media (max-width: 900px) {
-  .overview-grid, .stowage-grid, .compare-grid { grid-template-columns: 1fr; }
+  .overview-grid, .stowage-grid, .compare-grid, .ballast-grid { grid-template-columns: 1fr; }
   .stowage-grid > :last-child { grid-column: auto; display: grid; }
   .comments-grid { grid-template-columns: 1fr 1fr; }
 }

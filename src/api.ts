@@ -35,6 +35,34 @@ const voyageData = {
   ] as Cargo[]
 };
 
+export type ShoreBallastRecord = {
+  id: string;
+  tankId: string;
+  delta: number;
+  position: number;
+  officer: string;
+  recordedAt: string;
+};
+
+// 岸端（船公司调度系统）已入账的压载水调拨记录
+// BT-2602-01 与船端本地批次同号同值 → 合并时去重，只入账一次
+// BT-2602-02 与船端同号但水量不同 → 水量冲突，保留双方并挂起
+// BT-2602-03 与船端同号但货位不同 → 货位冲突，保留双方并挂起
+// BT-2602-11 岸端独有 → 合并时直接入账
+const shoreBallast: ShoreBallastRecord[] = [
+  { id: 'BT-2602-01', tankId: 'TK-2', delta: -120, position: 8, officer: '岸端调度', recordedAt: '10:02' },
+  { id: 'BT-2602-02', tankId: 'TK-3', delta: -150, position: 12, officer: '岸端调度', recordedAt: '10:04' },
+  { id: 'BT-2602-03', tankId: 'TK-4', delta: 80, position: 14, officer: '岸端调度', recordedAt: '10:06' },
+  { id: 'BT-2602-11', tankId: 'TK-1', delta: 60, position: 4, officer: '岸端调度', recordedAt: '10:08' }
+];
+
+// 模拟船岸链路：首次合并（attempt 0）网关 503，用于演示“合并失败后保留本地批次并重试”
+export async function fetchShoreBallast(attempt: number): Promise<ShoreBallastRecord[]> {
+  await new Promise((resolve) => setTimeout(resolve, 420));
+  if (attempt === 0) throw new Error('shore-gateway 503');
+  return shoreBallast.map((record) => ({ ...record }));
+}
+
 const mockBaseQuery: BaseQueryFn = async (arg) => {
   await new Promise((resolve) => setTimeout(resolve, 180));
   if (arg === 'voyage' || (typeof arg === 'object' && arg && 'url' in arg && (arg as { url: string }).url === 'voyage')) return { data: voyageData };

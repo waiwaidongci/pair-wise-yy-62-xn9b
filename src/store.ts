@@ -1,5 +1,7 @@
 import { configureStore, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { stowageApi, type Cargo, type CargoType } from './api';
+import { moveCargo, updateCargoPort } from './actions';
+import { ballastReducer } from './ballast';
 
 export type StowageComment = {
   id: string;
@@ -52,12 +54,6 @@ const slice = createSlice({
   initialState,
   reducers: {
     selectCargo(state, action: PayloadAction<string>) { state.activeCargoId = action.payload; },
-    moveCargo(state, action: PayloadAction<{ id: string; bay: number; row: number; tier: number }>) {
-      const cargo = state.cargo.find((item) => item.id === action.payload.id);
-      if (cargo) Object.assign(cargo, action.payload);
-      state.planRevision += 1;
-      state.draftSavedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    },
     updateLashing(state, action: PayloadAction<{ id: string; lashing: Cargo['lashing'] }>) {
       const cargo = state.cargo.find((item) => item.id === action.payload.id);
       if (cargo) cargo.lashing = action.payload.lashing;
@@ -78,21 +74,41 @@ const slice = createSlice({
     },
     setViewMode(state, action: PayloadAction<'3d' | 'section'>) { state.viewMode = action.payload; },
     lockPlan(state) { state.locked = true; state.planRevision += 1; }
+  },
+  extraReducers: (builder) => {
+    builder
+      .addCase(moveCargo, (state, action) => {
+        const cargo = state.cargo.find((item) => item.id === action.payload.id);
+        if (cargo) Object.assign(cargo, { bay: action.payload.bay, row: action.payload.row, tier: action.payload.tier });
+        state.planRevision += 1;
+        state.draftSavedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      })
+      .addCase(updateCargoPort, (state, action) => {
+        const cargo = state.cargo.find((item) => item.id === action.payload.id);
+        if (cargo) cargo.port = action.payload.port;
+        state.planRevision += 1;
+        state.draftSavedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      });
   }
 });
 
-export const { selectCargo, moveCargo, updateLashing, addComment, acceptComment, rejectComment, acceptLimit, setViewMode, lockPlan } = slice.actions;
+export const { selectCargo, updateLashing, addComment, acceptComment, rejectComment, acceptLimit, setViewMode, lockPlan } = slice.actions;
+export { moveCargo, updateCargoPort } from './actions';
 
 export const store = configureStore({
-  reducer: { stowage: slice.reducer, [stowageApi.reducerPath]: stowageApi.reducer },
+  reducer: { stowage: slice.reducer, ballast: ballastReducer, [stowageApi.reducerPath]: stowageApi.reducer },
   middleware: (getDefault) => getDefault().concat(stowageApi.middleware)
 });
 
 store.subscribe(() => {
-  if (typeof localStorage !== 'undefined') localStorage.setItem('yy62-stowage-plan', JSON.stringify(store.getState().stowage));
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('yy62-stowage-plan', JSON.stringify(store.getState().stowage));
+    localStorage.setItem('yy62-ballast', JSON.stringify(store.getState().ballast));
+  }
 });
 
 export type RootState = ReturnType<typeof store.getState>;
+export type AppDispatch = typeof store.dispatch;
 
 export function calculateStability(cargo: Cargo[]) {
   const total = cargo.reduce((sum, item) => sum + item.weight, 0);
